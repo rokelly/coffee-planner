@@ -24,10 +24,7 @@
             measurementId: "G-JTCYNVLWR8"
         };
 
-        // App ID for data partitioning
         const appId = "coffee-rotation-planner";
-
-        // Global State
         const DAILY_RATE = 30;
         const IDEAL_REST = 14;
         const todayStr = new Date().toISOString().split('T')[0];
@@ -36,6 +33,7 @@
         currentCalendarDate.setDate(1);
         let coffeeData = [];
         let db, auth, user;
+        let saveTimeout = null;
 
         // Sync helper
         function showSyncStatus() {
@@ -47,7 +45,6 @@
             }
         }
 
-        // Exposed Handlers
         window.addBatch = async function() {
             if (!user) return;
             const newId = 'c' + Date.now();
@@ -59,21 +56,31 @@
                 roastDate: todayStr,
                 uiIndex: (coffeeData.length > 0 ? (coffeeData[0].uiIndex + 1) % 5 : 0)
             });
-            await saveData();
+            await saveDataImmediate();
         };
 
         window.removeBatch = async function(id) {
             if (!user) return;
             coffeeData = coffeeData.filter(c => c.id !== id);
-            await saveData();
+            await saveDataImmediate();
         };
 
-        window.updateValue = async function(id, key, value) {
+        // FIXED: updateValue now updates local state immediately for visual feedback 
+        // but debounces the Firebase save so we don't lose input focus.
+        window.updateValue = function(id, key, value) {
             if (!user) return;
             const idx = coffeeData.findIndex(c => c.id === id);
             if (idx !== -1) {
                 coffeeData[idx][key] = (key === 'grams' || key === 'restDays') ? (parseFloat(value) || 0) : value;
-                await saveData();
+                
+                // Update specific internal calculations without re-rendering the whole list
+                updatePlanner(false); 
+                
+                // Debounce the save to prevent the "one letter at a time" focus loss
+                clearTimeout(saveTimeout);
+                saveTimeout = setTimeout(() => {
+                    saveDataImmediate();
+                }, 500); 
             }
         };
 
@@ -88,10 +95,9 @@
             updatePlanner(); 
         };
 
-        async function saveData() {
+        async function saveDataImmediate() {
             if (!user) return;
             try {
-                // RULE 1: Specific path structure required for permissions
                 const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
                 await setDoc(docRef, { batches: coffeeData }, { merge: true });
             } catch (e) {
@@ -100,6 +106,12 @@
         }
 
         function renderInputs() {
+            // We only want to rebuild the list if the user isn't currently typing
+            // to avoid stealing focus.
+            if (document.activeElement && (document.activeElement.tagName === 'INPUT')) {
+                return; 
+            }
+
             const container = document.getElementById('coffee-list');
             if (!container) return;
             container.innerHTML = '';
@@ -116,7 +128,7 @@
                     const toIdx = index;
                     const item = coffeeData.splice(fromIdx, 1)[0];
                     coffeeData.splice(toIdx, 0, item);
-                    await saveData();
+                    await saveDataImmediate();
                 });
                 card.addEventListener('dragend', () => card.classList.remove('dragging'));
 
@@ -147,7 +159,7 @@
             });
         }
 
-        function updatePlanner() {
+        function updatePlanner(shouldRenderInputs = true) {
             let runningEndDate = null;
             const chronologicalList = [...coffeeData].reverse();
 
@@ -192,6 +204,7 @@
                 nextRoastDate.setDate(finalEndDate.getDate() - IDEAL_REST);
             }
 
+            if (shouldRenderInputs) renderInputs();
             renderCalendar(processed, nextRoastDate);
         }
 
@@ -236,13 +249,11 @@
             }
         }
 
-        // Initialize App
         window.addEventListener('load', async () => {
             const app = initializeApp(firebaseConfig);
             auth = getAuth(app);
             db = getFirestore(app);
 
-            // RULE 3: Auth Before Queries
             const initAuth = async () => {
                 await signInAnonymously(auth).catch(err => console.error("Auth error:", err));
             };
@@ -253,20 +264,18 @@
                 user = u;
                 if (user) {
                     document.getElementById('user-display').innerText = `USER ID: ${user.uid}`;
-                    // RULE 1: Specific path structure
                     const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
                     onSnapshot(docRef, (snapshot) => {
                         if (snapshot.exists()) {
                             coffeeData = snapshot.data().batches || [];
                             showSyncStatus();
-                            renderInputs();
-                            updatePlanner();
+                            // We pass false to avoid blowing away the inputs if the user is currently typing
+                            updatePlanner(true); 
                         } else if (coffeeData.length === 0) {
-                            // Initial dummy data for new users
                             coffeeData = [
                                 { id: 'c0', name: "Example Roast", grams: 500, restDays: 14, roastDate: todayStr, uiIndex: 0 }
                             ];
-                            saveData();
+                            saveDataImmediate();
                         }
                     }, (error) => console.error("Firestore error:", error));
                 }
@@ -279,52 +288,32 @@
         input { border: 1px solid #d2b48c; border-radius: 0.4rem; padding: 0.3rem; width: 100%; font-size: 0.8rem; }
         input:focus { outline: 2px solid #8b4513; border-color: transparent; }
         .accent-text { color: #8b4513; }
-        
         .main-container { display: flex; flex: 1; overflow: hidden; gap: 1.5rem; padding: 1.5rem; }
         .sidebar { width: 340px; display: flex; flex-direction: column; gap: 1rem; overflow-y: auto; padding-right: 0.5rem; }
         .content { flex: 1; overflow-y: auto; }
-
         .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background-color: #e5e7eb; border: 1px solid #e5e7eb; }
         .calendar-day { background-color: white; min-height: 90px; padding: 0.4rem; display: flex; flex-direction: column; overflow: hidden; }
         .calendar-header-day { background-color: #f3f4f6; padding: 0.5rem; text-align: center; font-weight: bold; font-size: 0.7rem; text-transform: uppercase; }
         .day-num { font-size: 0.7rem; color: #9ca3af; margin-bottom: 2px; }
-        
         .bar { font-size: 0.6rem; height: 16px; line-height: 16px; padding: 0 4px; border-radius: 3px; margin-top: 2px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border: 1px solid transparent; }
-        
-        .day-under-rested { 
-            background-image: linear-gradient(45deg, rgba(0,0,0,0.06) 25%, transparent 25%, transparent 50%, rgba(0,0,0,0.06) 50%, rgba(0,0,0,0.06) 75%, transparent 75%, transparent) !important;
-            background-size: 8px 8px !important;
-            border: 1px dashed rgba(0,0,0,0.1) !important;
-        }
-
+        .day-under-rested { background-image: linear-gradient(45deg, rgba(0,0,0,0.06) 25%, transparent 25%, transparent 50%, rgba(0,0,0,0.06) 50%, rgba(0,0,0,0.06) 75%, transparent 75%, transparent) !important; background-size: 8px 8px !important; border: 1px dashed rgba(0,0,0,0.1) !important; }
         .coffee-ui-0 { border-left: 4px solid #be185d; } .bar-0 { background-color: #fce7f3; color: #9d174d; border-color: #fbcfe8; }
         .coffee-ui-1 { border-left: 4px solid #0369a1; } .bar-1 { background-color: #e0f2fe; color: #075985; border-color: #bae6fd; }
         .coffee-ui-2 { border-left: 4px solid #15803d; } .bar-2 { background-color: #dcfce7; color: #166534; border-color: #bbf7d0; }
         .coffee-ui-3 { border-left: 4px solid #7c3aed; } .bar-3 { background-color: #ede9fe; color: #5b21b6; border-color: #ddd6fe; }
         .coffee-ui-4 { border-left: 4px solid #ea580c; } .bar-4 { background-color: #fff7ed; color: #9a3412; border-color: #ffedd5; }
-
         .event-roast { font-size: 0.6rem; color: #92400e; background: #fef3c7; border: 1px solid #fcd34d; padding: 1px 3px; border-radius: 3px; font-weight: bold; margin-bottom: 2px; text-align: center; }
         .today { background-color: #fffbeb; outline: 2px solid #fbbf24; z-index: 10; }
         .other-month { opacity: 0.4; background-color: #f9fafb; }
-        
         .nav-btn { transition: all 0.2s; border: 1px solid #d2b48c; padding: 0.2rem 0.6rem; border-radius: 0.4rem; font-size: 0.75rem; font-weight: 600; color: #8b4513; }
         .nav-btn:hover { background-color: #8b4513; color: white; }
-
         .btn-add { border: 2px dashed #d2b48c; color: #8b4513; padding: 0.75rem; border-radius: 0.75rem; font-size: 0.8rem; font-weight: bold; text-align: center; cursor: pointer; transition: all 0.2s; }
         .btn-add:hover { background-color: #fff7ed; border-color: #8b4513; }
-        
         .btn-remove { color: #ef4444; opacity: 0.3; transition: opacity 0.2s; cursor: pointer; padding: 2px; }
         .btn-remove:hover { opacity: 1; }
-
         .dragging { opacity: 0.4; border: 2px solid #8b4513; }
         #sync-status { font-size: 10px; color: #10b981; margin-left: 10px; display: none; }
-
-        @media (max-width: 768px) {
-            .main-container { flex-direction: column; overflow-y: auto; }
-            .sidebar { width: 100%; order: 2; overflow-y: visible; }
-            .content { order: 1; min-height: 500px; }
-            .calendar-day { min-height: 70px; }
-        }
+        @media (max-width: 768px) { .main-container { flex-direction: column; overflow-y: auto; } .sidebar { width: 100%; order: 2; overflow-y: visible; } .content { order: 1; min-height: 500px; } .calendar-day { min-height: 70px; } }
     </style>
 </head>
 <body>
