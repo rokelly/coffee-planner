@@ -65,34 +65,34 @@
             await saveDataImmediate();
         };
 
-        // FIXED: updateValue now updates local state immediately for visual feedback 
-        // but debounces the Firebase save so we don't lose input focus.
+        // FIXED: updateValue updates local state immediately for visual feedback
+        // but debounces the Firebase save.
         window.updateValue = function(id, key, value) {
             if (!user) return;
             const idx = coffeeData.findIndex(c => c.id === id);
             if (idx !== -1) {
                 coffeeData[idx][key] = (key === 'grams' || key === 'restDays') ? (parseFloat(value) || 0) : value;
                 
-                // Update specific internal calculations without re-rendering the whole list
+                // Update internal calculations (labels only)
                 updatePlanner(false); 
                 
-                // Debounce the save to prevent the "one letter at a time" focus loss
+                // Debounce the actual Firestore sync
                 clearTimeout(saveTimeout);
                 saveTimeout = setTimeout(() => {
                     saveDataImmediate();
-                }, 500); 
+                }, 800); 
             }
         };
 
         window.changeMonth = (delta) => { 
             currentCalendarDate.setMonth(currentCalendarDate.getMonth() + delta); 
-            updatePlanner(); 
+            updatePlanner(true); 
         };
         
         window.resetToToday = () => { 
             currentCalendarDate = new Date(); 
             currentCalendarDate.setDate(1); 
-            updatePlanner(); 
+            updatePlanner(true); 
         };
 
         async function saveDataImmediate() {
@@ -106,9 +106,10 @@
         }
 
         function renderInputs() {
-            // We only want to rebuild the list if the user isn't currently typing
-            // to avoid stealing focus.
-            if (document.activeElement && (document.activeElement.tagName === 'INPUT')) {
+            // CRITICAL FIX: If the user is currently typing in an input field within the list,
+            // do NOT re-render the list. Re-rendering destroys the DOM element being typed in.
+            const active = document.activeElement;
+            if (active && active.tagName === 'INPUT' && document.getElementById('coffee-list').contains(active)) {
                 return; 
             }
 
@@ -267,10 +268,22 @@
                     const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
                     onSnapshot(docRef, (snapshot) => {
                         if (snapshot.exists()) {
-                            coffeeData = snapshot.data().batches || [];
+                            // Sync state from cloud
+                            const incoming = snapshot.data().batches || [];
+                            
+                            // If user is currently editing, we merge instead of overwrite to preserve current typing
+                            const active = document.activeElement;
+                            const isTyping = active && active.tagName === 'INPUT' && document.getElementById('coffee-list').contains(active);
+                            
+                            if (!isTyping) {
+                                coffeeData = incoming;
+                                updatePlanner(true); 
+                            } else {
+                                // Just update the reference but don't re-render inputs
+                                coffeeData = incoming;
+                                updatePlanner(false);
+                            }
                             showSyncStatus();
-                            // We pass false to avoid blowing away the inputs if the user is currently typing
-                            updatePlanner(true); 
                         } else if (coffeeData.length === 0) {
                             coffeeData = [
                                 { id: 'c0', name: "Example Roast", grams: 500, restDays: 14, roastDate: todayStr, uiIndex: 0 }
