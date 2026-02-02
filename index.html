@@ -11,7 +11,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyDYnj4q6mQgnTJGUtrgNA6kUC8PvmR97Ug",
@@ -25,7 +25,6 @@
 
         const appId = "coffee-rotation-planner";
         const DAILY_RATE = 30;
-        const IDEAL_REST = 14;
         const todayStr = new Date().toISOString().split('T')[0];
         
         let currentCalendarDate = new Date();
@@ -34,6 +33,7 @@
         let db, auth, user;
         let saveTimeout = null;
         let isUserEditing = false;
+        let isInitialized = false; // Guard to prevent overwriting cloud with defaults
 
         function showSyncStatus(text = "● Synced") {
             const status = document.getElementById('sync-status');
@@ -74,7 +74,6 @@
         window.onInputFocus = () => { isUserEditing = true; };
         window.onInputBlur = () => { 
             isUserEditing = false; 
-            // Final safety save when leaving a field
             saveDataImmediate();
         };
 
@@ -82,10 +81,7 @@
             if (!user) return;
             const idx = coffeeData.findIndex(c => c.id === id);
             if (idx !== -1) {
-                // Update local memory immediately
                 coffeeData[idx][key] = (key === 'grams' || key === 'restDays') ? (parseFloat(value) || 0) : value;
-                
-                // Update calculations on screen (without re-rendering input boxes)
                 updatePlanner(false); 
                 
                 showSyncStatus("● Saving...");
@@ -96,23 +92,10 @@
             }
         };
 
-        window.changeMonth = (delta) => { 
-            currentCalendarDate.setMonth(currentCalendarDate.getMonth() + delta); 
-            updatePlanner(true); 
-        };
-        
-        window.resetToToday = () => { 
-            currentCalendarDate = new Date(); 
-            currentCalendarDate.setDate(1); 
-            updatePlanner(true); 
-        };
-
         async function saveDataImmediate() {
-            if (!user) return;
+            if (!user || !isInitialized) return; // Never save until we've at least tried to load
             try {
                 const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
-                // We use setDoc without merge:true for the batches array to ensure 
-                // the cloud perfectly matches our current local state.
                 await setDoc(docRef, { batches: coffeeData });
                 showSyncStatus("● Synced");
             } catch (e) {
@@ -123,16 +106,13 @@
 
         function renderInputs() {
             if (isUserEditing) return;
-
             const container = document.getElementById('coffee-list');
             if (!container) return;
             container.innerHTML = '';
             
-            coffeeData.forEach((coffee, index) => {
+            coffeeData.forEach((coffee) => {
                 const card = document.createElement('div');
                 card.className = `card p-3 draggable coffee-ui-${coffee.uiIndex}`;
-                card.draggable = true;
-                
                 card.innerHTML = `
                     <div class="flex justify-between items-center mb-2">
                          <div class="flex items-center gap-2 flex-1">
@@ -228,7 +208,17 @@
             }
         }
 
-        // Logic to compare two data arrays to see if they are actually different
+        window.changeMonth = (delta) => { 
+            currentCalendarDate.setMonth(currentCalendarDate.getMonth() + delta); 
+            updatePlanner(true); 
+        };
+        
+        window.resetToToday = () => { 
+            currentCalendarDate = new Date(); 
+            currentCalendarDate.setDate(1); 
+            updatePlanner(true); 
+        };
+
         function isDataDifferent(a, b) {
             return JSON.stringify(a) !== JSON.stringify(b);
         }
@@ -240,33 +230,38 @@
 
             await signInAnonymously(auth);
 
-            onAuthStateChanged(auth, (u) => {
+            onAuthStateChanged(auth, async (u) => {
                 user = u;
                 if (user) {
-                    document.getElementById('user-display').innerText = `USER ID: ${user.uid}`;
+                    document.getElementById('user-display').innerText = `USER: ${user.uid.substring(0,8)}...`;
                     const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
                     
+                    // INITIAL LOAD
+                    const docSnap = await getDoc(docRef);
+                    if (docSnap.exists()) {
+                        coffeeData = docSnap.data().batches || [];
+                    } else {
+                        coffeeData = [{ id: 'c0', name: "Example Roast", grams: 500, restDays: 14, roastDate: todayStr, uiIndex: 0 }];
+                    }
+                    isInitialized = true;
+                    updatePlanner(true);
+
+                    // LIVE SYNC (ONLY if something changes externally)
                     onSnapshot(docRef, (snapshot) => {
                         if (snapshot.exists()) {
                             const incoming = snapshot.data().batches || [];
-                            // ONLY update local state if the incoming cloud data is actually different
-                            // AND the user isn't currently typing.
                             if (isDataDifferent(incoming, coffeeData) && !isUserEditing) {
                                 coffeeData = incoming;
                                 updatePlanner(true); 
                                 showSyncStatus();
                             }
-                        } else if (coffeeData.length === 0) {
-                            coffeeData = [{ id: 'c0', name: "Example Roast", grams: 500, restDays: 14, roastDate: todayStr, uiIndex: 0 }];
-                            saveDataImmediate();
                         }
                     });
                 }
             });
 
-            // FORCE SAVE ON CLOSE/REFRESH
-            window.addEventListener('beforeunload', () => {
-                if (user) saveDataImmediate();
+            window.addEventListener('pagehide', () => {
+                if (user && isInitialized) saveDataImmediate();
             });
         });
     </script>
@@ -274,12 +269,11 @@
         body { background-color: #fdfbf7; color: #4a3728; height: 100vh; display: flex; flex-direction: column; overflow: hidden; font-family: sans-serif; }
         .card { background: white; border-radius: 0.75rem; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05); border: 1px solid #efeae2; }
         input { border: 1px solid #d2b48c; border-radius: 0.4rem; padding: 0.3rem; width: 100%; font-size: 0.8rem; background: #fffcf9; }
-        input:focus { outline: 2px solid #8b4513; border-color: transparent; background: white; }
         .main-container { display: flex; flex: 1; overflow: hidden; gap: 1.5rem; padding: 1.5rem; }
-        .sidebar { width: 320px; display: flex; flex-direction: column; gap: 1rem; overflow-y: auto; padding-right: 4px; }
+        .sidebar { width: 320px; display: flex; flex-direction: column; gap: 1rem; overflow-y: auto; }
         .content { flex: 1; overflow-y: auto; }
         .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background-color: #e5e7eb; border: 1px solid #e5e7eb; border-radius: 4px; overflow: hidden; }
-        .calendar-day { background-color: white; min-height: 80px; padding: 0.4rem; display: flex; flex-direction: column; }
+        .calendar-day { background-color: white; min-height: 80px; padding: 0.4rem; display: flex; flex-direction: column; position: relative; }
         .calendar-header-day { background-color: #f3f4f6; padding: 0.4rem; text-align: center; font-weight: bold; font-size: 0.7rem; text-transform: uppercase; color: #6b7280; }
         .day-num { font-size: 0.7rem; color: #9ca3af; font-weight: 600; }
         .bar { font-size: 0.6rem; height: 16px; line-height: 16px; padding: 0 4px; border-radius: 3px; margin-top: 2px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -289,13 +283,10 @@
         .coffee-ui-2 { border-left: 4px solid #15803d; } .bar-2 { background-color: #dcfce7; color: #166534; }
         .coffee-ui-3 { border-left: 4px solid #7c3aed; } .bar-3 { background-color: #ede9fe; color: #5b21b6; }
         .coffee-ui-4 { border-left: 4px solid #ea580c; } .bar-4 { background-color: #fff7ed; color: #9a3412; }
-        .today { background-color: #fffbeb; box-shadow: inset 0 0 0 2px #fcd34d; }
+        .today { background-color: #fffbeb; box-shadow: inset 0 0 0 2px #fcd34d; z-index: 10; }
         .nav-btn { border: 1px solid #d2b48c; padding: 0.2rem 0.6rem; border-radius: 0.4rem; font-size: 0.75rem; color: #8b4513; font-weight: bold; background: white; cursor: pointer; }
-        .nav-btn:hover { background: #8b4513; color: white; }
-        .btn-add { border: 2px dashed #d2b48c; color: #8b4513; padding: 0.75rem; border-radius: 0.75rem; font-size: 0.8rem; font-weight: bold; text-align: center; cursor: pointer; background: white; transition: all 0.2s; }
-        .btn-add:hover { background: #fdf5e6; border-color: #8b4513; }
-        .btn-remove { color: #ef4444; opacity: 0.3; cursor: pointer; transition: opacity 0.2s; }
-        .btn-remove:hover { opacity: 1; }
+        .btn-add { border: 2px dashed #d2b48c; color: #8b4513; padding: 0.75rem; border-radius: 0.75rem; font-size: 0.8rem; font-weight: bold; text-align: center; cursor: pointer; background: white; }
+        .btn-remove { color: #ef4444; opacity: 0.3; cursor: pointer; }
         #sync-status { font-size: 10px; color: #10b981; margin-left: 10px; font-weight: bold; }
         @media (max-width: 768px) { .main-container { flex-direction: column; overflow-y: auto; } .sidebar { width: 100%; order: 2; } .content { order: 1; height: 400px; flex: none; } }
     </style>
@@ -308,7 +299,7 @@
         </div>
         <div class="text-right">
             <div id="user-display" class="text-[9px] text-stone-300 font-mono">CONNECTING...</div>
-            <div class="text-[10px] text-stone-400 font-bold">RATE: 30g/DAY</div>
+            <div class="text-[10px] text-stone-400 font-bold">30g/DAY</div>
         </div>
     </header>
 
@@ -340,11 +331,6 @@
                     <div class="calendar-header-day text-[10px]">Sat</div>
                 </div>
                 <div id="calendarGrid" class="calendar-grid flex-1"></div>
-                
-                <div class="mt-4 flex gap-4 text-[9px] font-bold text-stone-400 uppercase tracking-tighter">
-                    <div class="flex items-center gap-1"><span class="w-3 h-3 day-under-rested border rounded"></span> Under-Rested Periods</div>
-                    <div class="flex items-center gap-1"><span class="w-3 h-3 bg-white border-2 border-amber-400 rounded"></span> Today</div>
-                </div>
             </div>
         </div>
     </div>
