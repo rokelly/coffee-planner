@@ -3,33 +3,45 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <meta name="apple-mobile-web-app-capable" content="yes">
+    <!-- Modern PWA Tags -->
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Coffee Rotation Planner</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Firebase SDKs -->
+    
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        const firebaseConfig = JSON.parse(__firebase_config);
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
+        // --- ENVIRONMENT CHECK ---
+        const getFirebaseConfig = () => {
+            try {
+                if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                    return JSON.parse(__firebase_config);
+                }
+            } catch (e) {
+                console.error("Config parse error", e);
+            }
+            return null;
+        };
+
+        const config = getFirebaseConfig();
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'coffee-rotation-planner';
+
+        // Global state
+        let coffeeData = [];
+        let user = null;
+        let isInitialized = false;
+        let isUserEditing = false;
+        let saveTimeout = null;
 
         const DAILY_RATE = 30;
         const todayStr = new Date().toISOString().split('T')[0];
-        
         let currentCalendarDate = new Date();
         currentCalendarDate.setDate(1);
-        let coffeeData = [];
-        let user = null;
-        let saveTimeout = null;
-        let isUserEditing = false;
-        let isInitialized = false;
 
+        // UI Helpers
         function updateSyncUI(status, time = null) {
             const statusEl = document.getElementById('sync-status');
             const timeEl = document.getElementById('last-saved');
@@ -37,72 +49,123 @@
             if (time && timeEl) timeEl.innerText = `LAST SAVED: ${time}`;
         }
 
-        window.addBatch = async function() {
-            if (!user) return;
-            const newId = 'c' + Date.now();
-            const newBatch = { 
-                id: newId, 
-                name: "New Batch", 
-                grams: 500, 
-                restDays: 14, 
-                roastDate: todayStr,
-                uiIndex: (coffeeData.length > 0 ? (coffeeData[0].uiIndex + 1) % 5 : 0)
+        // Setup Firebase if config exists
+        if (config) {
+            const app = initializeApp(config);
+            const auth = getAuth(app);
+            const db = getFirestore(app);
+
+            // Export functions to window early to avoid "undefined" errors on buttons
+            window.addBatch = async function() {
+                if (!isInitialized) return;
+                const newId = 'c' + Date.now();
+                const newBatch = { 
+                    id: newId, 
+                    name: "New Roast", 
+                    grams: 500, 
+                    restDays: 14, 
+                    roastDate: new Date().toISOString().split('T')[0],
+                    uiIndex: (coffeeData.length > 0 ? (coffeeData[0].uiIndex + 1) % 5 : 0)
+                };
+                coffeeData = [newBatch, ...coffeeData];
+                updatePlanner(true);
+                await saveDataImmediate();
             };
-            coffeeData = [newBatch, ...coffeeData];
-            renderInputs();
-            updatePlanner(false);
-            await saveDataImmediate();
-        };
 
-        window.removeBatch = async function(id) {
-            if (!user) return;
-            coffeeData = coffeeData.filter(c => c.id !== id);
-            renderInputs();
-            updatePlanner(false);
-            await saveDataImmediate();
-        };
+            window.removeBatch = async function(id) {
+                coffeeData = coffeeData.filter(c => c.id !== id);
+                updatePlanner(true);
+                await saveDataImmediate();
+            };
 
-        window.onInputFocus = () => { isUserEditing = true; };
-        window.onInputBlur = () => { 
-            isUserEditing = false; 
-            saveDataImmediate();
-        };
+            window.updateValue = function(id, key, value) {
+                const idx = coffeeData.findIndex(c => c.id === id);
+                if (idx !== -1) {
+                    coffeeData[idx][key] = (key === 'grams' || key === 'restDays') ? (parseFloat(value) || 0) : value;
+                    updatePlanner(false); 
+                    updateSyncUI("● Saving...");
+                    clearTimeout(saveTimeout);
+                    saveTimeout = setTimeout(saveDataImmediate, 1000);
+                }
+            };
 
-        window.updateValue = function(id, key, value) {
-            if (!user) return;
-            const idx = coffeeData.findIndex(c => c.id === id);
-            if (idx !== -1) {
-                coffeeData[idx][key] = (key === 'grams' || key === 'restDays') ? (parseFloat(value) || 0) : value;
-                updatePlanner(false); 
-                
-                updateSyncUI("● Saving...");
-                clearTimeout(saveTimeout);
-                saveTimeout = setTimeout(() => {
-                    saveDataImmediate();
-                }, 500); 
+            async function saveDataImmediate() {
+                if (!user || !isInitialized) return;
+                try {
+                    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
+                    await setDoc(docRef, { batches: coffeeData });
+                    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                    updateSyncUI("● Synced", now);
+                } catch (e) {
+                    console.error("Save Error:", e);
+                    updateSyncUI("● Save Error");
+                }
             }
-        };
 
-        async function saveDataImmediate() {
-            // Only save if we have a user and have successfully loaded initial data
-            if (!user || !isInitialized) return;
-            try {
-                const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
-                await setDoc(docRef, { batches: coffeeData });
-                const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                updateSyncUI("● Synced", now);
-            } catch (e) {
-                console.error("Firestore Write Error:", e);
-                updateSyncUI("● Save Error");
-            }
+            // Auth & Load
+            const init = async () => {
+                try {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+
+                    onAuthStateChanged(auth, async (u) => {
+                        user = u;
+                        if (user) {
+                            document.getElementById('user-display').innerText = `ID: ${user.uid.substring(0,6)}`;
+                            const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
+                            const docSnap = await getDoc(docRef);
+                            
+                            if (docSnap.exists()) {
+                                coffeeData = docSnap.data().batches || [];
+                            } else {
+                                coffeeData = [{ id: 'c0', name: "First Batch", grams: 500, restDays: 14, roastDate: todayStr, uiIndex: 0 }];
+                                await setDoc(docRef, { batches: coffeeData });
+                            }
+                            
+                            isInitialized = true;
+                            updatePlanner(true);
+
+                            onSnapshot(docRef, (snap) => {
+                                if (snap.exists() && !isUserEditing) {
+                                    coffeeData = snap.data().batches || [];
+                                    updatePlanner(true);
+                                }
+                            });
+                        }
+                    });
+                } catch (err) {
+                    console.error("Init Error:", err);
+                    updateSyncUI("● Auth Error");
+                }
+            };
+
+            init();
+        } else {
+            updateSyncUI("● Config Error");
+            console.warn("Waiting for __firebase_config injection...");
         }
+
+        // Global UI Handlers
+        window.onInputFocus = () => { isUserEditing = true; };
+        window.onInputBlur = () => { isUserEditing = false; saveDataImmediate(); };
+        window.changeMonth = (delta) => { 
+            currentCalendarDate.setMonth(currentCalendarDate.getMonth() + delta); 
+            updatePlanner(true); 
+        };
+        window.resetToToday = () => { 
+            currentCalendarDate = new Date(); 
+            currentCalendarDate.setDate(1); 
+            updatePlanner(true); 
+        };
 
         function renderInputs() {
             if (isUserEditing) return;
             const container = document.getElementById('coffee-list');
             if (!container) return;
             container.innerHTML = '';
-            
             coffeeData.forEach((coffee) => {
                 const card = document.createElement('div');
                 card.className = `card p-3 coffee-ui-${coffee.uiIndex}`;
@@ -116,19 +179,11 @@
                             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
                          </button>
                     </div>
-                    <div class="grid grid-cols-1 gap-2 mb-2">
-                        <div>
-                            <label class="block text-[8px] font-bold uppercase text-gray-400">Roast Date</label>
-                            <input type="date" value="${coffee.roastDate}" onfocus="onInputFocus()" onblur="onInputBlur()" oninput="updateValue('${coffee.id}', 'roastDate', this.value)" class="py-1">
-                        </div>
-                    </div>
                     <div class="grid grid-cols-2 gap-2">
                         <div><label class="block text-[8px] font-bold uppercase text-gray-400">Grams</label><input type="number" value="${coffee.grams}" onfocus="onInputFocus()" onblur="onInputBlur()" oninput="updateValue('${coffee.id}', 'grams', this.value)"></div>
-                        <div><label class="block text-[8px] font-bold uppercase text-gray-400">Target Rest</label><input type="number" value="${coffee.restDays || 14}" onfocus="onInputFocus()" onblur="onInputBlur()" oninput="updateValue('${coffee.id}', 'restDays', this.value)"></div>
+                        <div><label class="block text-[8px] font-bold uppercase text-gray-400">Rest</label><input type="number" value="${coffee.restDays || 14}" onfocus="onInputFocus()" onblur="onInputBlur()" oninput="updateValue('${coffee.id}', 'restDays', this.value)"></div>
                     </div>
-                    <div class="mt-2 space-y-0.5">
-                        <div id="summary-${coffee.id}" class="text-[9px] font-bold uppercase opacity-60">---</div>
-                    </div>
+                    <div id="summary-${coffee.id}" class="mt-2 text-[9px] font-bold uppercase opacity-60"></div>
                 `;
                 container.appendChild(card);
             });
@@ -137,30 +192,23 @@
         function updatePlanner(shouldRenderInputs = true) {
             let runningEndDate = null;
             const chronologicalList = [...coffeeData].reverse();
-
             const processed = chronologicalList.filter(c => c.grams > 0).map((coffee) => {
                 const duration = Math.floor(coffee.grams / DAILY_RATE);
-                const targetRest = coffee.restDays || 0;
                 const rDate = new Date(coffee.roastDate + 'T00:00:00');
                 const targetRestDate = new Date(rDate);
-                targetRestDate.setDate(rDate.getDate() + targetRest);
-
-                let startDate = runningEndDate ? new Date(runningEndDate) : new Date(targetRestDate);
+                targetRestDate.setDate(rDate.getDate() + (coffee.restDays || 14));
+                let startDate = runningEndDate && runningEndDate > targetRestDate ? new Date(runningEndDate) : new Date(targetRestDate);
                 const endDate = new Date(startDate);
                 endDate.setDate(startDate.getDate() + duration);
-                
                 const actualRestOnStart = Math.floor((startDate - rDate) / 86400000);
                 const summaryEl = document.getElementById(`summary-${coffee.id}`);
-                
                 if (summaryEl) {
                     summaryEl.innerText = `${startDate.toLocaleDateString('en-US', {month:'short', day:'numeric'})} (${actualRestOnStart}d rest)`;
-                    summaryEl.className = actualRestOnStart < targetRest ? "text-[9px] font-bold uppercase text-amber-600" : "text-[9px] font-bold uppercase opacity-60";
+                    summaryEl.className = actualRestOnStart < (coffee.restDays || 14) ? "mt-2 text-[9px] font-bold uppercase text-amber-600" : "mt-2 text-[9px] font-bold uppercase opacity-60";
                 }
-
                 runningEndDate = new Date(endDate);
                 return { ...coffee, startDate, endDate, targetRestDate };
             });
-
             if (shouldRenderInputs) renderInputs();
             renderCalendar(processed);
         }
@@ -172,17 +220,14 @@
             const year = currentCalendarDate.getFullYear(), month = currentCalendarDate.getMonth();
             const label = document.getElementById('calendarMonthLabel');
             if (label) label.innerText = currentCalendarDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-
             const startDay = new Date(year, month, 1);
             startDay.setDate(1 - startDay.getDay());
-
             for (let i = 0; i < 42; i++) {
                 const day = new Date(startDay); day.setDate(startDay.getDate() + i);
                 const dayStr = day.toDateString();
                 const dayEl = document.createElement('div');
                 dayEl.className = `calendar-day ${day.getMonth() !== month ? 'other-month' : ''} ${dayStr === new Date().toDateString() ? 'today' : ''}`;
                 dayEl.innerHTML = `<span class="day-num">${day.getDate()}</span>`;
-
                 coffees.forEach(c => {
                     if (day >= c.startDate && day < c.endDate) {
                         const bar = document.createElement('div');
@@ -194,64 +239,6 @@
                 grid.appendChild(dayEl);
             }
         }
-
-        window.changeMonth = (delta) => { 
-            currentCalendarDate.setMonth(currentCalendarDate.getMonth() + delta); 
-            updatePlanner(true); 
-        };
-        
-        window.resetToToday = () => { 
-            currentCalendarDate = new Date(); 
-            currentCalendarDate.setDate(1); 
-            updatePlanner(true); 
-        };
-
-        window.onload = async () => {
-            const initAuth = async () => {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
-                }
-            };
-            
-            await initAuth();
-
-            onAuthStateChanged(auth, async (u) => {
-                user = u;
-                if (user) {
-                    document.getElementById('user-display').innerText = `ID: ${user.uid.substring(0,6)}`;
-                    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
-                    
-                    try {
-                        const docSnap = await getDoc(docRef);
-                        if (docSnap.exists()) {
-                            coffeeData = docSnap.data().batches || [];
-                        } else {
-                            coffeeData = [{ id: 'c0', name: "My First Bag", grams: 500, restDays: 14, roastDate: todayStr, uiIndex: 0 }];
-                            await setDoc(docRef, { batches: coffeeData });
-                        }
-                        
-                        // Critical: Data is now loaded, we can allow edits
-                        isInitialized = true;
-                        updatePlanner(true);
-
-                        onSnapshot(docRef, (snap) => {
-                            if (snap.exists() && !isUserEditing) {
-                                const cloud = snap.data().batches || [];
-                                if (JSON.stringify(cloud) !== JSON.stringify(coffeeData)) {
-                                    coffeeData = cloud;
-                                    updatePlanner(true);
-                                }
-                            }
-                        }, (err) => console.error("Sync Listener Error:", err));
-                    } catch (e) {
-                        console.error("Initial Load Error:", e);
-                        updateSyncUI("● Connection Error");
-                    }
-                }
-            });
-        };
     </script>
     <style>
         body { background-color: #fdfbf7; color: #4a3728; height: 100vh; display: flex; flex-direction: column; overflow: hidden; font-family: system-ui, -apple-system, sans-serif; }
@@ -283,7 +270,7 @@
         <div>
             <h1 class="text-lg font-bold text-[#8b4513]">☕ Coffee Rotation</h1>
             <div class="flex items-center gap-2">
-                <span id="sync-status" class="text-[9px] font-bold text-emerald-500 uppercase">● Checking...</span>
+                <span id="sync-status" class="text-[9px] font-bold text-amber-500 uppercase">● Connecting...</span>
                 <span id="last-saved" class="text-[9px] text-stone-400 font-mono"></span>
             </div>
         </div>
@@ -295,7 +282,7 @@
 
     <div class="main-container">
         <div class="sidebar">
-            <button onclick="addBatch()" class="btn-add">+ New Roast</button>
+            <button onclick="addBatch()" class="btn-add w-full">+ New Roast</button>
             <div id="coffee-list" class="flex flex-col gap-3"></div>
         </div>
 
