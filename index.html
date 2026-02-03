@@ -153,19 +153,19 @@
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Step 1: Resolve the Project Identity Link
+        // Resolved Project Identity Link
         const CUSTOM_PROJECT_ID = "coffee-rotation-planner"; 
 
         async function init() {
             const status = document.getElementById('sync-status');
             
-            // Check for injected config
+            // Check for injected config from platform
             const hasInjectedConfig = typeof __firebase_config !== 'undefined';
             
             if (!hasInjectedConfig) {
                 status.innerText = "● Waiting for Handshake...";
                 status.className = "text-[9px] font-bold text-amber-500 uppercase";
-                console.warn("Handshake incomplete. If this persists, ensure your Firebase Project ID is linked correctly and refresh.");
+                console.warn("Handshake incomplete. Project ID set to:", CUSTOM_PROJECT_ID);
                 return;
             }
 
@@ -190,7 +190,6 @@
                     }
                 };
 
-                // Try secure token login first, then anonymous
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
                 } else {
