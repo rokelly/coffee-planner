@@ -1,0 +1,27 @@
+name: Inject Secrets and Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Inject Firebase Secrets
+        run: |
+          sed -i "s/YOUR_API_KEY/${{ secrets.FIREBASE_API_KEY }}/g" coffee_planner.html
+          sed -i "s/YOUR_SENDER_ID/${{ secrets.FIREBASE_SENDER_ID }}/g" coffee_planner.html
+          sed -i "s/YOUR_APP_ID/${{ secrets.FIREBASE_APP_ID }}/g" coffee_planner.html
+          # Added project ID injection for robustness
+          sed -i "s/coffee-rotation-planner/${{ secrets.FIREBASE_PROJECT_ID }}/g" coffee_planner.html
+
+      - name: Deploy to GitHub Pages
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: .
+          branch: gh-pages
