@@ -7,23 +7,24 @@
     <script src="https://cdn.tailwindcss.com"></script>
     
     <script>
-        // --- GLOBAL APP STATE ---
-        let coffeeData = [];
-        let user = null;
-        let isInitialized = false;
-        let isUserEditing = false;
+        // --- SHARED STATE ---
+        window.coffeeData = [];
+        window.appUser = null;
+        window.isAppInitialized = false;
+        window.isUserEditing = false;
         let saveTimeout = null;
         let currentCalendarDate = new Date();
         currentCalendarDate.setDate(1);
 
         const DAILY_RATE = 30;
 
+        // --- UI CORE LOGIC ---
         window.triggerSave = function() {
             if (window.firebaseSaveHandler) window.firebaseSaveHandler();
         };
 
         window.addBatch = function() {
-            if (!isInitialized) return;
+            if (!window.isAppInitialized) return;
             const newId = 'c' + Date.now();
             const newBatch = { 
                 id: newId, 
@@ -31,23 +32,23 @@
                 grams: 500, 
                 restDays: 14, 
                 roastDate: new Date().toISOString().split('T')[0],
-                uiIndex: (coffeeData.length > 0 ? (coffeeData[0].uiIndex + 1) % 5 : 0)
+                uiIndex: (window.coffeeData.length > 0 ? (window.coffeeData[0].uiIndex + 1) % 5 : 0)
             };
-            coffeeData = [newBatch, ...coffeeData];
+            window.coffeeData = [newBatch, ...window.coffeeData];
             updatePlanner(true);
             window.triggerSave();
         };
 
         window.removeBatch = function(id) {
-            coffeeData = coffeeData.filter(c => c.id !== id);
+            window.coffeeData = window.coffeeData.filter(c => c.id !== id);
             updatePlanner(true);
             window.triggerSave();
         };
 
         window.updateValue = function(id, key, value) {
-            const idx = coffeeData.findIndex(c => c.id === id);
+            const idx = window.coffeeData.findIndex(c => c.id === id);
             if (idx !== -1) {
-                coffeeData[idx][key] = (key === 'grams' || key === 'restDays') ? (parseFloat(value) || 0) : value;
+                window.coffeeData[idx][key] = (key === 'grams' || key === 'restDays') ? (parseFloat(value) || 0) : value;
                 updatePlanner(false); 
                 document.getElementById('sync-status').innerText = "● Saving...";
                 clearTimeout(saveTimeout);
@@ -55,8 +56,8 @@
             }
         };
 
-        window.onInputFocus = () => { isUserEditing = true; };
-        window.onInputBlur = () => { isUserEditing = false; window.triggerSave(); };
+        window.onInputFocus = () => { window.isUserEditing = true; };
+        window.onInputBlur = () => { window.isUserEditing = false; window.triggerSave(); };
         window.changeMonth = (delta) => { 
             currentCalendarDate.setMonth(currentCalendarDate.getMonth() + delta); 
             updatePlanner(true); 
@@ -68,11 +69,11 @@
         };
 
         function renderInputs() {
-            if (isUserEditing) return;
+            if (window.isUserEditing) return;
             const container = document.getElementById('coffee-list');
             if (!container) return;
             container.innerHTML = '';
-            coffeeData.forEach((coffee) => {
+            window.coffeeData.forEach((coffee) => {
                 const card = document.createElement('div');
                 card.className = `card p-3 coffee-ui-${coffee.uiIndex}`;
                 card.innerHTML = `
@@ -97,7 +98,7 @@
 
         function updatePlanner(shouldRenderInputs = true) {
             let runningEndDate = null;
-            const chronologicalList = [...coffeeData].reverse();
+            const chronologicalList = [...window.coffeeData].reverse();
             const processed = chronologicalList.filter(c => c.grams > 0).map((coffee) => {
                 const duration = Math.floor(coffee.grams / DAILY_RATE);
                 const rDate = new Date(coffee.roastDate + 'T00:00:00');
@@ -147,106 +148,101 @@
         }
     </script>
 
-    <!-- FIREBASE INITIALIZATION -->
+    <!-- ROBUST FIREBASE INITIALIZER -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Deep-search for configuration variables across possible global scopes
-        function getGlobalVar(key) {
-            const searchTargets = [window, globalThis, window.parent, window.top];
-            for (let target of searchTargets) {
-                try {
-                    if (target && target[key]) return target[key];
-                } catch (e) { /* ignore cross-origin errors */ }
-            }
-            return undefined;
-        }
-
-        async function initApp() {
+        async function attemptBoot() {
             const status = document.getElementById('sync-status');
-            let config = getGlobalVar('__firebase_config');
-            let attempts = 0;
+            
+            // This function checks for the specific platform-injected variables
+            const getConfig = () => {
+                try {
+                    return window.__firebase_config || (typeof __firebase_config !== 'undefined' ? __firebase_config : null);
+                } catch(e) { return null; }
+            };
 
-            // Wait for injection
-            while (!config && attempts < 50) {
-                await new Promise(r => setTimeout(r, 100));
-                config = getGlobalVar('__firebase_config');
-                attempts++;
+            let configRaw = getConfig();
+
+            // Use a broader observer if initial check fails
+            if (!configRaw) {
+                status.innerText = "● Connecting to Environment...";
+                let retries = 0;
+                while (!configRaw && retries < 60) {
+                    await new Promise(r => setTimeout(r, 200));
+                    configRaw = getConfig();
+                    retries++;
+                }
             }
 
-            if (!config) {
-                status.innerText = "● Link Error - Refreshing...";
-                status.className = "text-[10px] font-bold text-red-500 underline cursor-pointer";
-                status.onclick = () => window.location.reload();
+            if (!configRaw) {
+                status.innerText = "● Local Mode (No Sync)";
+                status.className = "text-[9px] font-bold text-stone-400 uppercase";
+                window.isAppInitialized = true; // Fallback to local use
+                window.coffeeData = [{ id: 'local-0', name: "Local Cache", grams: 500, restDays: 14, roastDate: new Date().toISOString().split('T')[0], uiIndex: 0 }];
+                updatePlanner(true);
                 return;
             }
 
             try {
-                const firebaseConfig = typeof config === 'string' ? JSON.parse(config) : config;
-                const appId = getGlobalVar('__app_id') || 'coffee-inventory-v1';
+                const config = typeof configRaw === 'string' ? JSON.parse(configRaw) : configRaw;
+                const appId = window.__app_id || (typeof __app_id !== 'undefined' ? __app_id : 'coffee-v1');
                 
-                const app = initializeApp(firebaseConfig);
+                const app = initializeApp(config);
                 const auth = getAuth(app);
                 const db = getFirestore(app);
 
                 window.firebaseSaveHandler = async () => {
-                    if (!user || !isInitialized) return;
+                    if (!window.appUser || !window.isAppInitialized) return;
                     try {
-                        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
-                        await setDoc(docRef, { batches: coffeeData, updatedAt: Date.now() });
+                        const docRef = doc(db, 'artifacts', appId, 'users', window.appUser.uid, 'inventory', 'main');
+                        await setDoc(docRef, { batches: window.coffeeData, ts: Date.now() });
                         status.innerText = "● Synced";
                         status.className = "text-[9px] font-bold text-emerald-600 uppercase";
-                        document.getElementById('last-saved').innerText = `UPDATED ${new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`;
-                    } catch (e) { console.error("Sync failure", e); }
+                    } catch (e) { console.error(e); }
                 };
 
-                const customToken = getGlobalVar('__initial_auth_token');
-                if (customToken) {
-                    await signInWithCustomToken(auth, customToken).catch(() => signInAnonymously(auth));
+                const token = window.__initial_auth_token || (typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null);
+                if (token) {
+                    await signInWithCustomToken(auth, token).catch(() => signInAnonymously(auth));
                 } else {
                     await signInAnonymously(auth);
                 }
 
                 onAuthStateChanged(auth, async (u) => {
-                    user = u;
-                    if (user) {
-                        document.getElementById('user-display').innerText = `SESSION: ${user.uid.substring(0,6)}`;
-                        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
+                    window.appUser = u;
+                    if (u) {
+                        document.getElementById('user-display').innerText = `ID: ${u.uid.substring(0,6)}`;
+                        const docRef = doc(db, 'artifacts', appId, 'users', u.uid, 'inventory', 'main');
                         
-                        try {
-                            const snap = await getDoc(docRef);
-                            if (snap.exists()) {
-                                coffeeData = snap.data().batches || [];
-                            } else {
-                                coffeeData = [{ id: 'c0', name: "Morning Roast", grams: 500, restDays: 14, roastDate: new Date().toISOString().split('T')[0], uiIndex: 0 }];
-                            }
-                        } catch (e) {
-                            console.error("Fetch error", e);
+                        const snap = await getDoc(docRef);
+                        if (snap.exists()) {
+                            window.coffeeData = snap.data().batches || [];
+                        } else {
+                            window.coffeeData = [{ id: 'c0', name: "My First Batch", grams: 500, restDays: 14, roastDate: new Date().toISOString().split('T')[0], uiIndex: 0 }];
                         }
                         
-                        isInitialized = true;
+                        window.isAppInitialized = true;
                         updatePlanner(true);
 
                         onSnapshot(docRef, (s) => {
-                            if (s.exists() && !isUserEditing) {
-                                coffeeData = s.data().batches || [];
+                            if (s.exists() && !window.isUserEditing) {
+                                window.coffeeData = s.data().batches || [];
                                 updatePlanner(true);
                             }
-                        }, (err) => {
-                            console.error("Snapshot disconnected", err);
                         });
                     }
                 });
             } catch (err) {
-                status.innerText = "● Setup Failed";
-                console.error("Critical Init Error:", err);
+                console.error("Firebase Auth Error", err);
+                status.innerText = "● Sync Error";
             }
         }
 
-        // Delay entry slightly to let environment stabilize
-        setTimeout(initApp, 500);
+        // Run boot sequence
+        attemptBoot();
     </script>
 
     <style>
@@ -279,19 +275,19 @@
         <div>
             <h1 class="text-lg font-bold text-[#8b4513]">☕ Coffee Rotation</h1>
             <div class="flex items-center gap-2">
-                <span id="sync-status" class="text-[9px] font-bold text-amber-500 uppercase">● Linking...</span>
+                <span id="sync-status" class="text-[9px] font-bold text-amber-500 uppercase">● Handshaking...</span>
                 <span id="last-saved" class="text-[9px] text-stone-400 font-mono"></span>
             </div>
         </div>
         <div class="text-right">
             <div id="user-display" class="text-[9px] text-stone-300 font-mono">ID: ...</div>
-            <div class="text-[10px] text-stone-500 font-bold uppercase">Inventory Sync</div>
+            <div class="text-[10px] text-stone-500 font-bold uppercase tracking-tighter">Inventory Sync</div>
         </div>
     </header>
 
     <div class="main-container">
         <div class="sidebar">
-            <button onclick="addBatch()" class="btn-add w-full">+ Add Coffee Batch</button>
+            <button onclick="addBatch()" class="btn-add w-full">+ Log New Batch</button>
             <div id="coffee-list" class="flex flex-col gap-3"></div>
         </div>
 
