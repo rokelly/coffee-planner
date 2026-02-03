@@ -32,7 +32,7 @@
                 grams: 500, 
                 restDays: 14, 
                 roastDate: new Date().toISOString().split('T')[0],
-                uiIndex: (window.coffeeData.length > 0 ? (window.coffeeData[0].uiIndex + 1) % 5 : 0)
+                uiIndex: (window.coffeeData.length > 0 ? (window.coffeeData[0].uiIndex + 1) : 0) % 5
             };
             window.coffeeData = [newBatch, ...window.coffeeData];
             updatePlanner(true);
@@ -148,48 +148,21 @@
         }
     </script>
 
-    <!-- SECURE AUTO-INJECTED FIREBASE INITIALIZER -->
+    <!-- AUTOMATIC FIREBASE INJECTION -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // This function searches for the hidden config without hardcoding it
-        const fetchConfig = () => {
-            try {
-                // Check multiple possible global scopes for the config
-                return window.__firebase_config || 
-                       (typeof __firebase_config !== 'undefined' ? __firebase_config : null) ||
-                       (window.parent && window.parent.__firebase_config);
-            } catch(e) { return null; }
-        };
+        // Global variables provided by the environment
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'coffee-planner-v1';
 
-        async function boot() {
+        async function init() {
             const status = document.getElementById('sync-status');
-            let raw = fetchConfig();
             
-            // If missing, wait up to 10 seconds for injection
-            if (!raw) {
-                let waitTime = 0;
-                while (!raw && waitTime < 10000) {
-                    await new Promise(r => setTimeout(r, 100));
-                    raw = fetchConfig();
-                    waitTime += 100;
-                }
-            }
-
-            if (!raw) {
-                status.innerText = "● Config Missing - Click to Retry";
-                status.onclick = () => window.location.reload();
-                return;
-            }
-
             try {
-                const config = typeof raw === 'string' ? JSON.parse(raw) : raw;
-                const appId = window.__app_id || (typeof __app_id !== 'undefined' ? __app_id : 'coffee-v1');
-                const token = window.__initial_auth_token || (typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null);
-                
-                const app = initializeApp(config);
+                const app = initializeApp(firebaseConfig);
                 const auth = getAuth(app);
                 const db = getFirestore(app);
 
@@ -200,12 +173,15 @@
                         await setDoc(doc(db, path), { batches: window.coffeeData, ts: Date.now() });
                         status.innerText = "● Synced";
                         status.className = "text-[9px] font-bold text-emerald-600 uppercase";
-                    } catch (e) { console.error(e); }
+                    } catch (e) { 
+                        status.innerText = "● Permission Denied";
+                        console.error("Save Error:", e); 
+                    }
                 };
 
-                // Authenticate
-                if (token) {
-                    await signInWithCustomToken(auth, token).catch(() => signInAnonymously(auth));
+                // Authentication Protocol
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
                 } else {
                     await signInAnonymously(auth);
                 }
@@ -213,7 +189,7 @@
                 onAuthStateChanged(auth, async (user) => {
                     window.appUser = user;
                     if (user) {
-                        document.getElementById('user-display').innerText = `ID: ${user.uid.substring(0,6)}`;
+                        document.getElementById('user-display').innerText = `ID: ${user.uid.substring(0,8)}`;
                         const path = `artifacts/${appId}/users/${user.uid}/inventory/main`;
                         const docRef = doc(db, path);
                         
@@ -221,27 +197,28 @@
                         if (snap.exists()) {
                             window.coffeeData = snap.data().batches || [];
                         } else {
-                            window.coffeeData = [{ id: 'c0', name: "Light Roast #1", grams: 500, restDays: 14, roastDate: new Date().toISOString().split('T')[0], uiIndex: 0 }];
+                            window.coffeeData = [{ id: 'c0', name: "My First Batch", grams: 500, restDays: 14, roastDate: new Date().toISOString().split('T')[0], uiIndex: 0 }];
                         }
                         
                         window.isAppInitialized = true;
                         updatePlanner(true);
+
                         onSnapshot(docRef, (s) => {
                             if (s.exists() && !window.isUserEditing) {
                                 window.coffeeData = s.data().batches || [];
                                 updatePlanner(true);
                             }
-                        });
+                        }, (err) => console.error("Sync Error:", err));
                     }
                 });
 
             } catch (err) {
-                console.error(err);
-                status.innerText = "● Connection Failed";
+                console.error("Init Error:", err);
+                status.innerText = "● Setup Error";
             }
         }
 
-        boot();
+        init();
     </script>
 
     <style>
@@ -274,7 +251,7 @@
         <div>
             <h1 class="text-lg font-bold text-[#8b4513]">☕ Coffee Rotation</h1>
             <div class="flex items-center gap-2">
-                <span id="sync-status" class="text-[9px] font-bold text-amber-500 uppercase">● Checking Auth...</span>
+                <span id="sync-status" class="text-[9px] font-bold text-stone-400 uppercase">● Checking...</span>
             </div>
         </div>
         <div class="text-right">
