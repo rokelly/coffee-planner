@@ -23,6 +23,7 @@ jobs:
           
           if [ -f "$FILE" ]; then
             echo "Injecting secrets into $FILE..."
+            # Using | as a delimiter in sed to handle potential special characters in secrets
             sed -i "s|YOUR_API_KEY|${{ secrets.FIREBASE_API_KEY }}|g" "$FILE"
             sed -i "s|YOUR_SENDER_ID|${{ secrets.FIREBASE_SENDER_ID }}|g" "$FILE"
             sed -i "s|YOUR_APP_ID|${{ secrets.FIREBASE_APP_ID }}|g" "$FILE"
@@ -42,6 +43,11 @@ jobs:
           else
             echo "Injection successful: Placeholders replaced in $TARGET_FILE."
           fi
+
+      - name: Cache Busting
+        run: |
+          # Appends a timestamp comment to the end of the file to force a refresh
+          echo "<!-- Build Timestamp: $(date) -->" >> coffee_planner.html
 
       - name: Deploy to GitHub Pages
         uses: JamesIves/github-pages-deploy-action@v4
