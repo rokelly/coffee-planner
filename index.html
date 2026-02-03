@@ -18,7 +18,6 @@
 
         const DAILY_RATE = 30;
 
-        // UI ACTIONS
         window.triggerSave = function() {
             if (window.firebaseSaveHandler) window.firebaseSaveHandler();
         };
@@ -148,44 +147,47 @@
         }
     </script>
 
-    <!-- FIREBASE BOOTSTRAPPER -->
+    <!-- FIREBASE INITIALIZATION -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        async function startSystem() {
-            const status = document.getElementById('sync-status');
-            
-            // Helper to check for config in window or global scope
-            const findConfig = () => {
-                if (window.__firebase_config) return window.__firebase_config;
-                if (typeof __firebase_config !== 'undefined') return __firebase_config;
-                return null;
-            };
+        // Deep-search for configuration variables across possible global scopes
+        function getGlobalVar(key) {
+            const searchTargets = [window, globalThis, window.parent, window.top];
+            for (let target of searchTargets) {
+                try {
+                    if (target && target[key]) return target[key];
+                } catch (e) { /* ignore cross-origin errors */ }
+            }
+            return undefined;
+        }
 
-            let rawCfg = findConfig();
+        async function initApp() {
+            const status = document.getElementById('sync-status');
+            let config = getGlobalVar('__firebase_config');
             let attempts = 0;
 
-            // Wait loop
-            while (!rawCfg && attempts < 40) {
-                await new Promise(r => setTimeout(r, 150));
-                rawCfg = findConfig();
+            // Wait for injection
+            while (!config && attempts < 50) {
+                await new Promise(r => setTimeout(r, 100));
+                config = getGlobalVar('__firebase_config');
                 attempts++;
             }
 
-            if (!rawCfg) {
-                status.innerText = "● Config Missing - Click to retry";
-                status.className = "text-[10px] font-bold text-red-500 uppercase cursor-pointer underline bg-red-50 px-2 rounded";
-                status.onclick = () => startSystem();
+            if (!config) {
+                status.innerText = "● Link Error - Refreshing...";
+                status.className = "text-[10px] font-bold text-red-500 underline cursor-pointer";
+                status.onclick = () => window.location.reload();
                 return;
             }
 
             try {
-                const config = typeof rawCfg === 'string' ? JSON.parse(rawCfg) : rawCfg;
-                const appId = window.__app_id || (typeof __app_id !== 'undefined' ? __app_id : 'coffee-planner-v1');
+                const firebaseConfig = typeof config === 'string' ? JSON.parse(config) : config;
+                const appId = getGlobalVar('__app_id') || 'coffee-inventory-v1';
                 
-                const app = initializeApp(config);
+                const app = initializeApp(firebaseConfig);
                 const auth = getAuth(app);
                 const db = getFirestore(app);
 
@@ -193,16 +195,16 @@
                     if (!user || !isInitialized) return;
                     try {
                         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
-                        await setDoc(docRef, { batches: coffeeData });
+                        await setDoc(docRef, { batches: coffeeData, updatedAt: Date.now() });
                         status.innerText = "● Synced";
                         status.className = "text-[9px] font-bold text-emerald-600 uppercase";
-                        document.getElementById('last-saved').innerText = `SAVED AT ${new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`;
-                    } catch (e) { console.error(e); }
+                        document.getElementById('last-saved').innerText = `UPDATED ${new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`;
+                    } catch (e) { console.error("Sync failure", e); }
                 };
 
-                const token = window.__initial_auth_token || (typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null);
-                if (token) {
-                    await signInWithCustomToken(auth, token).catch(() => signInAnonymously(auth));
+                const customToken = getGlobalVar('__initial_auth_token');
+                if (customToken) {
+                    await signInWithCustomToken(auth, customToken).catch(() => signInAnonymously(auth));
                 } else {
                     await signInAnonymously(auth);
                 }
@@ -210,14 +212,18 @@
                 onAuthStateChanged(auth, async (u) => {
                     user = u;
                     if (user) {
-                        document.getElementById('user-display').innerText = user.uid.substring(0,8);
+                        document.getElementById('user-display').innerText = `SESSION: ${user.uid.substring(0,6)}`;
                         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
                         
-                        const snap = await getDoc(docRef);
-                        if (snap.exists()) {
-                            coffeeData = snap.data().batches || [];
-                        } else {
-                            coffeeData = [{ id: 'c0', name: "Standard Roast", grams: 500, restDays: 14, roastDate: new Date().toISOString().split('T')[0], uiIndex: 0 }];
+                        try {
+                            const snap = await getDoc(docRef);
+                            if (snap.exists()) {
+                                coffeeData = snap.data().batches || [];
+                            } else {
+                                coffeeData = [{ id: 'c0', name: "Morning Roast", grams: 500, restDays: 14, roastDate: new Date().toISOString().split('T')[0], uiIndex: 0 }];
+                            }
+                        } catch (e) {
+                            console.error("Fetch error", e);
                         }
                         
                         isInitialized = true;
@@ -228,15 +234,19 @@
                                 coffeeData = s.data().batches || [];
                                 updatePlanner(true);
                             }
+                        }, (err) => {
+                            console.error("Snapshot disconnected", err);
                         });
                     }
                 });
             } catch (err) {
-                status.innerText = "● Setup Error";
+                status.innerText = "● Setup Failed";
+                console.error("Critical Init Error:", err);
             }
         }
 
-        window.addEventListener('load', startSystem);
+        // Delay entry slightly to let environment stabilize
+        setTimeout(initApp, 500);
     </script>
 
     <style>
@@ -269,19 +279,19 @@
         <div>
             <h1 class="text-lg font-bold text-[#8b4513]">☕ Coffee Rotation</h1>
             <div class="flex items-center gap-2">
-                <span id="sync-status" class="text-[9px] font-bold text-amber-500 uppercase">● Waiting for Link...</span>
+                <span id="sync-status" class="text-[9px] font-bold text-amber-500 uppercase">● Linking...</span>
                 <span id="last-saved" class="text-[9px] text-stone-400 font-mono"></span>
             </div>
         </div>
         <div class="text-right">
-            <div id="user-display" class="text-[9px] text-stone-300 font-mono">...</div>
-            <div class="text-[10px] text-stone-500 font-bold uppercase">30g Daily</div>
+            <div id="user-display" class="text-[9px] text-stone-300 font-mono">ID: ...</div>
+            <div class="text-[10px] text-stone-500 font-bold uppercase">Inventory Sync</div>
         </div>
     </header>
 
     <div class="main-container">
         <div class="sidebar">
-            <button onclick="addBatch()" class="btn-add w-full">+ New Roast Batch</button>
+            <button onclick="addBatch()" class="btn-add w-full">+ Add Coffee Batch</button>
             <div id="coffee-list" class="flex flex-col gap-3"></div>
         </div>
 
