@@ -3,13 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Coffee Rotation Planner</title>
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- UI Logic & Global State -->
     <script>
+        // --- GLOBAL APP STATE ---
         let coffeeData = [];
         let user = null;
         let isInitialized = false;
@@ -20,10 +18,9 @@
 
         const DAILY_RATE = 30;
 
+        // UI ACTIONS
         window.triggerSave = function() {
-            if (window.firebaseSaveHandler) {
-                window.firebaseSaveHandler();
-            }
+            if (window.firebaseSaveHandler) window.firebaseSaveHandler();
         };
 
         window.addBatch = function() {
@@ -151,42 +148,43 @@
         }
     </script>
 
-    <!-- Firebase Logic -->
+    <!-- FIREBASE BOOTSTRAPPER -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        async function boot() {
+        async function startSystem() {
             const status = document.getElementById('sync-status');
             
-            // Helper to grab vars from window directly as they are injected
-            const getVar = (name) => {
-                if (typeof window[name] !== 'undefined') return window[name];
-                if (typeof globalThis !== 'undefined' && typeof globalThis[name] !== 'undefined') return globalThis[name];
-                return undefined;
-            }
+            // Helper to check for config in window or global scope
+            const findConfig = () => {
+                if (window.__firebase_config) return window.__firebase_config;
+                if (typeof __firebase_config !== 'undefined') return __firebase_config;
+                return null;
+            };
 
-            let cfg = getVar('__firebase_config');
+            let rawCfg = findConfig();
             let attempts = 0;
 
-            // Aggressive polling
-            while (!cfg && attempts < 100) {
-                await new Promise(r => setTimeout(r, 50));
-                cfg = getVar('__firebase_config');
+            // Wait loop
+            while (!rawCfg && attempts < 40) {
+                await new Promise(r => setTimeout(r, 150));
+                rawCfg = findConfig();
                 attempts++;
             }
 
-            if (!cfg) {
-                status.innerText = "● Config Missing - Reloading...";
-                status.className = "text-[10px] font-bold text-red-500 uppercase cursor-pointer underline";
-                status.onclick = () => window.location.reload();
+            if (!rawCfg) {
+                status.innerText = "● Config Missing - Click to retry";
+                status.className = "text-[10px] font-bold text-red-500 uppercase cursor-pointer underline bg-red-50 px-2 rounded";
+                status.onclick = () => startSystem();
                 return;
             }
 
             try {
-                const config = typeof cfg === 'string' ? JSON.parse(cfg) : cfg;
-                const appId = getVar('__app_id') || 'coffee-planner-id';
+                const config = typeof rawCfg === 'string' ? JSON.parse(rawCfg) : rawCfg;
+                const appId = window.__app_id || (typeof __app_id !== 'undefined' ? __app_id : 'coffee-planner-v1');
+                
                 const app = initializeApp(config);
                 const auth = getAuth(app);
                 const db = getFirestore(app);
@@ -196,14 +194,13 @@
                     try {
                         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
                         await setDoc(docRef, { batches: coffeeData });
-                        const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                        status.innerText = "● Saved";
+                        status.innerText = "● Synced";
                         status.className = "text-[9px] font-bold text-emerald-600 uppercase";
-                        document.getElementById('last-saved').innerText = `SYNCED ${now}`;
+                        document.getElementById('last-saved').innerText = `SAVED AT ${new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`;
                     } catch (e) { console.error(e); }
                 };
 
-                const token = getVar('__initial_auth_token');
+                const token = window.__initial_auth_token || (typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null);
                 if (token) {
                     await signInWithCustomToken(auth, token).catch(() => signInAnonymously(auth));
                 } else {
@@ -216,11 +213,11 @@
                         document.getElementById('user-display').innerText = user.uid.substring(0,8);
                         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
                         
-                        const snap = await getDoc(docRef).catch(() => null);
-                        if (snap && snap.exists()) {
+                        const snap = await getDoc(docRef);
+                        if (snap.exists()) {
                             coffeeData = snap.data().batches || [];
                         } else {
-                            coffeeData = [{ id: 'c0', name: "First Batch", grams: 500, restDays: 14, roastDate: new Date().toISOString().split('T')[0], uiIndex: 0 }];
+                            coffeeData = [{ id: 'c0', name: "Standard Roast", grams: 500, restDays: 14, roastDate: new Date().toISOString().split('T')[0], uiIndex: 0 }];
                         }
                         
                         isInitialized = true;
@@ -231,16 +228,15 @@
                                 coffeeData = s.data().batches || [];
                                 updatePlanner(true);
                             }
-                        }, (e) => console.error(e));
+                        });
                     }
                 });
             } catch (err) {
-                status.innerText = "● Initialization Error";
-                console.error(err);
+                status.innerText = "● Setup Error";
             }
         }
 
-        boot();
+        window.addEventListener('load', startSystem);
     </script>
 
     <style>
@@ -273,19 +269,19 @@
         <div>
             <h1 class="text-lg font-bold text-[#8b4513]">☕ Coffee Rotation</h1>
             <div class="flex items-center gap-2">
-                <span id="sync-status" class="text-[9px] font-bold text-amber-500 uppercase">● Handshaking...</span>
+                <span id="sync-status" class="text-[9px] font-bold text-amber-500 uppercase">● Waiting for Link...</span>
                 <span id="last-saved" class="text-[9px] text-stone-400 font-mono"></span>
             </div>
         </div>
         <div class="text-right">
-            <div id="user-display" class="text-[9px] text-stone-300 font-mono">ID: ...</div>
-            <div class="text-[9px] text-stone-400 font-bold uppercase tracking-tighter">Inventory Sync</div>
+            <div id="user-display" class="text-[9px] text-stone-300 font-mono">...</div>
+            <div class="text-[10px] text-stone-500 font-bold uppercase">30g Daily</div>
         </div>
     </header>
 
     <div class="main-container">
         <div class="sidebar">
-            <button onclick="addBatch()" class="btn-add w-full">+ Log New Batch</button>
+            <button onclick="addBatch()" class="btn-add w-full">+ New Roast Batch</button>
             <div id="coffee-list" class="flex flex-col gap-3"></div>
         </div>
 
