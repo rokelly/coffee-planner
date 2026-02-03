@@ -28,9 +28,8 @@
 
         window.addBatch = function() {
             if (!isInitialized) {
-                console.warn("System not initialized yet.");
                 const status = document.getElementById('sync-status');
-                status.innerText = "● Please Wait...";
+                status.innerText = "● System Busy...";
                 return;
             }
             const newId = 'c' + Date.now();
@@ -162,81 +161,106 @@
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        const startFirebase = async () => {
-            const getVal = (key) => window[key] || (typeof globalThis !== 'undefined' ? globalThis[key] : undefined);
+        // Global initialization function that can be retried
+        window.initFirebaseSystem = async () => {
+            const statusLabel = document.getElementById('sync-status');
             
-            let configRaw = getVal('__firebase_config');
-            let attempts = 0;
+            // Helper to check various possible locations for config
+            const getConfig = () => {
+                if (typeof __firebase_config !== 'undefined') return __firebase_config;
+                if (window.__firebase_config) return window.__firebase_config;
+                return null;
+            };
 
-            // Loop until config found
-            while (!configRaw && attempts < 40) {
-                await new Promise(r => setTimeout(r, 150));
-                configRaw = getVal('__firebase_config');
+            let configRaw = getConfig();
+            let attempts = 0;
+            
+            // Poll for config
+            while (!configRaw && attempts < 50) {
+                await new Promise(r => setTimeout(r, 100));
+                configRaw = getConfig();
                 attempts++;
             }
 
             if (!configRaw) {
-                document.getElementById('sync-status').innerText = "● Retry Connection";
-                document.getElementById('sync-status').className = "text-[9px] font-bold text-red-500 uppercase cursor-pointer underline";
-                document.getElementById('sync-status').onclick = () => location.reload();
+                statusLabel.innerText = "● Config Error";
+                statusLabel.className = "text-[10px] font-bold text-red-500 uppercase cursor-pointer hover:underline bg-red-50 px-2 py-0.5 rounded border border-red-200";
+                statusLabel.title = "Click to retry connecting";
+                statusLabel.onclick = () => window.initFirebaseSystem();
                 return;
             }
 
-            const config = typeof configRaw === 'string' ? JSON.parse(configRaw) : configRaw;
-            const appId = getVal('__app_id') || 'coffee-rotation-planner';
-            const app = initializeApp(config);
-            const auth = getAuth(app);
-            const db = getFirestore(app);
+            try {
+                statusLabel.innerText = "● Connecting...";
+                statusLabel.onclick = null;
+                
+                const config = typeof configRaw === 'string' ? JSON.parse(configRaw) : configRaw;
+                const appId = typeof __app_id !== 'undefined' ? __app_id : (window.__app_id || 'coffee-rotation-planner');
+                
+                const app = initializeApp(config);
+                const auth = getAuth(app);
+                const db = getFirestore(app);
 
-            window.firebaseSaveHandler = async () => {
-                if (!user || !isInitialized) return;
-                try {
-                    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
-                    await setDoc(docRef, { batches: coffeeData });
-                    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                    document.getElementById('sync-status').innerText = "● Synced";
-                    document.getElementById('sync-status').className = "text-[9px] font-bold text-emerald-500 uppercase";
-                    document.getElementById('last-saved').innerText = `LAST SAVED: ${now}`;
-                } catch (e) {
-                    console.error("Save Error", e);
-                }
-            };
-
-            const token = getVal('__initial_auth_token');
-            if (token) {
-                await signInWithCustomToken(auth, token);
-            } else {
-                await signInAnonymously(auth);
-            }
-
-            onAuthStateChanged(auth, async (u) => {
-                user = u;
-                if (user) {
-                    document.getElementById('user-display').innerText = `ID: ${user.uid.substring(0,6)}`;
-                    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
-                    const docSnap = await getDoc(docRef);
-                    
-                    if (docSnap.exists()) {
-                        coffeeData = docSnap.data().batches || [];
-                    } else {
-                        coffeeData = [{ id: 'c0', name: "Morning Brew", grams: 500, restDays: 14, roastDate: new Date().toISOString().split('T')[0], uiIndex: 0 }];
+                window.firebaseSaveHandler = async () => {
+                    if (!user || !isInitialized) return;
+                    try {
+                        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
                         await setDoc(docRef, { batches: coffeeData });
-                    }
-                    
-                    isInitialized = true;
-                    updatePlanner(true);
+                        const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        statusLabel.innerText = "● Synced";
+                        statusLabel.className = "text-[9px] font-bold text-emerald-600 uppercase";
+                        document.getElementById('last-saved').innerText = `LAST SAVED: ${now}`;
+                    } catch (e) { console.error("Save Error", e); }
+                };
 
-                    onSnapshot(docRef, (snap) => {
-                        if (snap.exists() && !isUserEditing) {
-                            coffeeData = snap.data().batches || [];
-                            updatePlanner(true);
-                        }
-                    }, (err) => console.error("Snapshot error:", err));
+                const token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : window.__initial_auth_token;
+                if (token) {
+                    await signInWithCustomToken(auth, token);
+                } else {
+                    await signInAnonymously(auth);
                 }
-            });
+
+                onAuthStateChanged(auth, async (u) => {
+                    user = u;
+                    if (user) {
+                        document.getElementById('user-display').innerText = `UID: ${user.uid.substring(0,6)}`;
+                        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
+                        
+                        try {
+                            const docSnap = await getDoc(docRef);
+                            if (docSnap.exists()) {
+                                coffeeData = docSnap.data().batches || [];
+                            } else {
+                                coffeeData = [{ id: 'c0', name: "Morning Blend", grams: 500, restDays: 14, roastDate: new Date().toISOString().split('T')[0], uiIndex: 0 }];
+                                await setDoc(docRef, { batches: coffeeData });
+                            }
+                        } catch (e) {
+                            coffeeData = [{ id: 'c0', name: "Morning Blend", grams: 500, restDays: 14, roastDate: new Date().toISOString().split('T')[0], uiIndex: 0 }];
+                        }
+                        
+                        isInitialized = true;
+                        updatePlanner(true);
+
+                        onSnapshot(docRef, (snap) => {
+                            if (snap.exists() && !isUserEditing) {
+                                coffeeData = snap.data().batches || [];
+                                updatePlanner(true);
+                            }
+                        }, (err) => console.error("Snapshot error:", err));
+                    }
+                });
+            } catch (err) {
+                console.error("Initialization Failed", err);
+                statusLabel.innerText = "● Setup Error";
+            }
         };
 
-        startFirebase();
+        // Trigger on load
+        if (document.readyState === 'complete') {
+            window.initFirebaseSystem();
+        } else {
+            window.addEventListener('load', window.initFirebaseSystem);
+        }
     </script>
 
     <style>
