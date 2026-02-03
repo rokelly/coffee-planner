@@ -18,11 +18,23 @@ jobs:
 
       - name: Inject Firebase Secrets
         run: |
-          # Use a temporary file to avoid sed issues on some runners
-          sed -i "s/YOUR_API_KEY/${{ secrets.FIREBASE_API_KEY }}/g" coffee_planner.html
-          sed -i "s/YOUR_SENDER_ID/${{ secrets.FIREBASE_SENDER_ID }}/g" coffee_planner.html
-          sed -i "s/YOUR_APP_ID/${{ secrets.FIREBASE_APP_ID }}/g" coffee_planner.html
-          sed -i "s/coffee-rotation-planner/${{ secrets.FIREBASE_PROJECT_ID }}/g" coffee_planner.html
+          # We use 'sed' to swap the placeholders for the actual secrets.
+          # The use of " instead of ' allows the shell to inject the secret variables.
+          sed -i "s|YOUR_API_KEY|${{ secrets.FIREBASE_API_KEY }}|g" coffee_planner.html
+          sed -i "s|YOUR_SENDER_ID|${{ secrets.FIREBASE_SENDER_ID }}|g" coffee_planner.html
+          sed -i "s|YOUR_APP_ID|${{ secrets.FIREBASE_APP_ID }}|g" coffee_planner.html
+          sed -i "s|coffee-rotation-planner|${{ secrets.FIREBASE_PROJECT_ID }}|g" coffee_planner.html
+
+      - name: Verify Injection
+        run: |
+          # This helper step checks if the placeholder still exists.
+          # It won't print your secrets, but it will tell us if the 'sed' failed.
+          if grep -q "YOUR_API_KEY" coffee_planner.html; then
+            echo "Injection failed: Placeholder YOUR_API_KEY still exists in coffee_planner.html"
+            exit 1
+          else
+            echo "Injection successful: Placeholders replaced."
+          fi
 
       - name: Deploy to GitHub Pages
         uses: JamesIves/github-pages-deploy-action@v4
