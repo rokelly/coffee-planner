@@ -13,8 +13,6 @@
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // SECURE CONFIGURATION: Loading from environment variables provided at runtime
-        // This prevents the API key from being hardcoded in the source text.
         const firebaseConfig = JSON.parse(__firebase_config);
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
@@ -42,14 +40,15 @@
         window.addBatch = async function() {
             if (!user) return;
             const newId = 'c' + Date.now();
-            coffeeData.unshift({ 
+            const newBatch = { 
                 id: newId, 
                 name: "New Batch", 
                 grams: 500, 
                 restDays: 14, 
                 roastDate: todayStr,
                 uiIndex: (coffeeData.length > 0 ? (coffeeData[0].uiIndex + 1) % 5 : 0)
-            });
+            };
+            coffeeData = [newBatch, ...coffeeData];
             renderInputs();
             updatePlanner(false);
             await saveDataImmediate();
@@ -85,16 +84,16 @@
         };
 
         async function saveDataImmediate() {
+            // Only save if we have a user and have successfully loaded initial data
             if (!user || !isInitialized) return;
             try {
-                // RULE 1: Using the mandatory strict path for user-private data
                 const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
                 await setDoc(docRef, { batches: coffeeData });
                 const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
                 updateSyncUI("● Synced", now);
             } catch (e) {
-                console.error("Save error:", e);
-                updateSyncUI("● Error Saving");
+                console.error("Firestore Write Error:", e);
+                updateSyncUI("● Save Error");
             }
         }
 
@@ -171,7 +170,8 @@
             if (!grid) return;
             grid.innerHTML = '';
             const year = currentCalendarDate.getFullYear(), month = currentCalendarDate.getMonth();
-            document.getElementById('calendarMonthLabel').innerText = currentCalendarDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+            const label = document.getElementById('calendarMonthLabel');
+            if (label) label.innerText = currentCalendarDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 
             const startDay = new Date(year, month, 1);
             startDay.setDate(1 - startDay.getDay());
@@ -208,7 +208,6 @@
 
         window.onload = async () => {
             const initAuth = async () => {
-                // RULE 3: Handle authentication before firestore queries
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
                 } else {
@@ -224,26 +223,32 @@
                     document.getElementById('user-display').innerText = `ID: ${user.uid.substring(0,6)}`;
                     const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
                     
-                    const docSnap = await getDoc(docRef);
-                    if (docSnap.exists()) {
-                        coffeeData = docSnap.data().batches || [];
-                    } else {
-                        coffeeData = [{ id: 'c0', name: "My First Bag", grams: 500, restDays: 14, roastDate: todayStr, uiIndex: 0 }];
-                        await setDoc(docRef, { batches: coffeeData });
-                    }
-                    
-                    isInitialized = true;
-                    updatePlanner(true);
-
-                    onSnapshot(docRef, (snap) => {
-                        if (snap.exists() && !isUserEditing) {
-                            const cloud = snap.data().batches || [];
-                            if (JSON.stringify(cloud) !== JSON.stringify(coffeeData)) {
-                                coffeeData = cloud;
-                                updatePlanner(true);
-                            }
+                    try {
+                        const docSnap = await getDoc(docRef);
+                        if (docSnap.exists()) {
+                            coffeeData = docSnap.data().batches || [];
+                        } else {
+                            coffeeData = [{ id: 'c0', name: "My First Bag", grams: 500, restDays: 14, roastDate: todayStr, uiIndex: 0 }];
+                            await setDoc(docRef, { batches: coffeeData });
                         }
-                    }, (err) => console.error("Sync Error:", err));
+                        
+                        // Critical: Data is now loaded, we can allow edits
+                        isInitialized = true;
+                        updatePlanner(true);
+
+                        onSnapshot(docRef, (snap) => {
+                            if (snap.exists() && !isUserEditing) {
+                                const cloud = snap.data().batches || [];
+                                if (JSON.stringify(cloud) !== JSON.stringify(coffeeData)) {
+                                    coffeeData = cloud;
+                                    updatePlanner(true);
+                                }
+                            }
+                        }, (err) => console.error("Sync Listener Error:", err));
+                    } catch (e) {
+                        console.error("Initial Load Error:", e);
+                        updateSyncUI("● Connection Error");
+                    }
                 }
             });
         };
@@ -268,8 +273,8 @@
         .coffee-ui-4 { border-left: 4px solid #ea580c; } .bar-4 { background-color: #fff7ed; color: #9a3412; }
         .today { background-color: #fffbeb; box-shadow: inset 0 0 0 2px #fcd34d; z-index: 5; }
         .nav-btn { border: 1px solid #d2b48c; padding: 0.2rem 0.5rem; border-radius: 0.4rem; font-size: 0.7rem; background: white; cursor: pointer; }
-        .btn-add { border: 2px dashed #d2b48c; color: #8b4513; padding: 0.5rem; border-radius: 0.75rem; font-size: 0.8rem; font-weight: bold; cursor: pointer; background: white; }
-        .btn-remove { color: #ef4444; opacity: 0.3; }
+        .btn-add { border: 2px dashed #d2b48c; color: #8b4513; padding: 0.5rem; border-radius: 0.75rem; font-size: 0.8rem; font-weight: bold; cursor: pointer; background: white; text-align: center; }
+        .btn-remove { color: #ef4444; opacity: 0.3; background: transparent; border: none; cursor: pointer; }
         @media (max-width: 768px) { .main-container { flex-direction: column; } .sidebar { width: 100%; order: 2; } .content { order: 1; height: 350px; flex: none; } }
     </style>
 </head>
@@ -278,7 +283,7 @@
         <div>
             <h1 class="text-lg font-bold text-[#8b4513]">☕ Coffee Rotation</h1>
             <div class="flex items-center gap-2">
-                <span id="sync-status" class="text-[9px] font-bold text-emerald-500 uppercase">● Synced</span>
+                <span id="sync-status" class="text-[9px] font-bold text-emerald-500 uppercase">● Checking...</span>
                 <span id="last-saved" class="text-[9px] text-stone-400 font-mono"></span>
             </div>
         </div>
@@ -297,7 +302,7 @@
         <div class="content">
             <div class="card p-4 h-full flex flex-col bg-white">
                 <div class="flex justify-between items-center mb-3">
-                    <h2 id="calendarMonthLabel" class="font-bold text-stone-700 text-sm">Month Year</h2>
+                    <h2 id="calendarMonthLabel" class="font-bold text-stone-700 text-sm">...</h2>
                     <div class="flex items-center gap-1">
                         <button onclick="changeMonth(-1)" class="nav-btn">&lt;</button>
                         <button onclick="resetToToday()" class="nav-btn">Today</button>
