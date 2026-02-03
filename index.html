@@ -148,20 +148,27 @@
         }
     </script>
 
-    <!-- AUTOMATIC FIREBASE INJECTION -->
+    <!-- AUTOMATIC FIREBASE INJECTION WITH FAILSAFE -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Global variables provided by the environment
-        const firebaseConfig = JSON.parse(__firebase_config);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'coffee-planner-v1';
-
         async function init() {
             const status = document.getElementById('sync-status');
             
+            // Failsafe: Check if environment variables are available
+            if (typeof __firebase_config === 'undefined') {
+                status.innerText = "● Environment Initializing...";
+                status.className = "text-[9px] font-bold text-amber-500 uppercase";
+                console.warn("Waiting for platform to inject Firebase configuration...");
+                return;
+            }
+
             try {
+                const firebaseConfig = JSON.parse(__firebase_config);
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'coffee-planner-v1';
+
                 const app = initializeApp(firebaseConfig);
                 const auth = getAuth(app);
                 const db = getFirestore(app);
@@ -197,7 +204,8 @@
                         if (snap.exists()) {
                             window.coffeeData = snap.data().batches || [];
                         } else {
-                            window.coffeeData = [{ id: 'c0', name: "My First Batch", grams: 500, restDays: 14, roastDate: new Date().toISOString().split('T')[0], uiIndex: 0 }];
+                            // Default data if new user
+                            window.coffeeData = [{ id: 'c0', name: "Light Roast", grams: 500, restDays: 14, roastDate: new Date().toISOString().split('T')[0], uiIndex: 0 }];
                         }
                         
                         window.isAppInitialized = true;
@@ -208,17 +216,25 @@
                                 window.coffeeData = s.data().batches || [];
                                 updatePlanner(true);
                             }
-                        }, (err) => console.error("Sync Error:", err));
+                        }, (err) => {
+                            console.error("Sync Error:", err);
+                            status.innerText = "● Sync Error";
+                        });
                     }
                 });
 
             } catch (err) {
                 console.error("Init Error:", err);
-                status.innerText = "● Setup Error";
+                status.innerText = "● Config Error";
             }
         }
 
-        init();
+        // Wait for DOM to be fully ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', init);
+        } else {
+            init();
+        }
     </script>
 
     <style>
@@ -251,7 +267,7 @@
         <div>
             <h1 class="text-lg font-bold text-[#8b4513]">☕ Coffee Rotation</h1>
             <div class="flex items-center gap-2">
-                <span id="sync-status" class="text-[9px] font-bold text-stone-400 uppercase">● Checking...</span>
+                <span id="sync-status" class="text-[9px] font-bold text-stone-400 uppercase">● Initializing...</span>
             </div>
         </div>
         <div class="text-right">
