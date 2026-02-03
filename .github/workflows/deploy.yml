@@ -24,11 +24,13 @@ jobs:
           if [ -f "$FILE" ]; then
             echo "Injecting secrets into $FILE..."
             # Using | as a delimiter in sed to handle potential special characters in secrets.
-            # We target the specific placeholder text.
+            # We target the specific placeholder text exactly as it appears in the HTML file.
             sed -i "s|YOUR_API_KEY|${{ secrets.FIREBASE_API_KEY }}|g" "$FILE"
             sed -i "s|YOUR_SENDER_ID|${{ secrets.FIREBASE_SENDER_ID }}|g" "$FILE"
             sed -i "s|YOUR_APP_ID|${{ secrets.FIREBASE_APP_ID }}|g" "$FILE"
-            sed -i "s|coffee-rotation-planner|${{ secrets.FIREBASE_PROJECT_ID }}|g" "$FILE"
+            
+            # More specific match for Project ID to avoid false positives in comments/logs
+            sed -i "s|projectId: \"coffee-rotation-planner\"|projectId: \"${{ secrets.FIREBASE_PROJECT_ID }}\"|g" "$FILE"
           else
             echo "Error: $FILE not found!"
             exit 1
@@ -46,9 +48,18 @@ jobs:
             echo "SUCCESS: YOUR_API_KEY placeholder has been replaced."
           fi
           
-          # Check if the project ID placeholder was replaced
-          if grep -q "coffee-rotation-planner" "$TARGET_FILE"; then
-            echo "WARNING: 'coffee-rotation-planner' placeholder still exists. This is expected if your Firebase Project ID is actually named this, otherwise it might be an injection failure."
+          # Improved verification for Project ID
+          if grep -q "projectId: \"coffee-rotation-planner\"" "$TARGET_FILE"; then
+             # If the secret itself is 'coffee-rotation-planner', this will still trigger.
+             # We check if the secret matches the placeholder to decide if it's an error.
+             if [ "${{ secrets.FIREBASE_PROJECT_ID }}" = "coffee-rotation-planner" ]; then
+                echo "VERIFIED: Project ID matches placeholder, injection confirmed."
+             else
+                echo "FAILED: Project ID placeholder still exists and does not match the secret."
+                exit 1
+             fi
+          else
+            echo "SUCCESS: Project ID placeholder has been replaced."
           fi
 
       - name: Cache Busting
