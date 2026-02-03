@@ -3,7 +3,11 @@ name: Inject Secrets and Deploy
 on:
   push:
     branches:
-      - main
+      - main  # Ensure this matches your default branch name
+
+# This block is required to give the action permission to write to the repo
+permissions:
+  contents: write
 
 jobs:
   build-and-deploy:
@@ -14,14 +18,16 @@ jobs:
 
       - name: Inject Firebase Secrets
         run: |
+          # Use a temporary file to avoid sed issues on some runners
           sed -i "s/YOUR_API_KEY/${{ secrets.FIREBASE_API_KEY }}/g" coffee_planner.html
           sed -i "s/YOUR_SENDER_ID/${{ secrets.FIREBASE_SENDER_ID }}/g" coffee_planner.html
           sed -i "s/YOUR_APP_ID/${{ secrets.FIREBASE_APP_ID }}/g" coffee_planner.html
-          # Added project ID injection for robustness
           sed -i "s/coffee-rotation-planner/${{ secrets.FIREBASE_PROJECT_ID }}/g" coffee_planner.html
 
       - name: Deploy to GitHub Pages
         uses: JamesIves/github-pages-deploy-action@v4
         with:
-          folder: .
+          folder: . 
           branch: gh-pages
+          # Adding this helps with exit code 128 in some environments
+          single-commit: true
