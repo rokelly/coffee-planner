@@ -23,7 +23,8 @@ jobs:
           
           if [ -f "$FILE" ]; then
             echo "Injecting secrets into $FILE..."
-            # Using | as a delimiter in sed to handle potential special characters in secrets
+            # Using | as a delimiter in sed to handle potential special characters in secrets.
+            # We target the specific placeholder text.
             sed -i "s|YOUR_API_KEY|${{ secrets.FIREBASE_API_KEY }}|g" "$FILE"
             sed -i "s|YOUR_SENDER_ID|${{ secrets.FIREBASE_SENDER_ID }}|g" "$FILE"
             sed -i "s|YOUR_APP_ID|${{ secrets.FIREBASE_APP_ID }}|g" "$FILE"
@@ -37,11 +38,17 @@ jobs:
         run: |
           TARGET_FILE="coffee_planner.html"
           
+          # Check for the presence of the most critical placeholder
           if grep -q "YOUR_API_KEY" "$TARGET_FILE"; then
-            echo "Injection failed: Placeholder YOUR_API_KEY still exists in $TARGET_FILE"
+            echo "FAILED: YOUR_API_KEY placeholder was not replaced in $TARGET_FILE."
             exit 1
           else
-            echo "Injection successful: Placeholders replaced in $TARGET_FILE."
+            echo "SUCCESS: YOUR_API_KEY placeholder has been replaced."
+          fi
+          
+          # Check if the project ID placeholder was replaced
+          if grep -q "coffee-rotation-planner" "$TARGET_FILE"; then
+            echo "WARNING: 'coffee-rotation-planner' placeholder still exists. This is expected if your Firebase Project ID is actually named this, otherwise it might be an injection failure."
           fi
 
       - name: Cache Busting
