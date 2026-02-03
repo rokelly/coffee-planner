@@ -13,6 +13,8 @@
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
+        // SECURE CONFIGURATION: Loading from environment variables provided at runtime
+        // This prevents the API key from being hardcoded in the source text.
         const firebaseConfig = JSON.parse(__firebase_config);
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
@@ -85,6 +87,7 @@
         async function saveDataImmediate() {
             if (!user || !isInitialized) return;
             try {
+                // RULE 1: Using the mandatory strict path for user-private data
                 const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'inventory', 'main');
                 await setDoc(docRef, { batches: coffeeData });
                 const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -205,6 +208,7 @@
 
         window.onload = async () => {
             const initAuth = async () => {
+                // RULE 3: Handle authentication before firestore queries
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
                 } else {
