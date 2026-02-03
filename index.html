@@ -148,85 +148,84 @@
         }
     </script>
 
-    <!-- ROBUST FIREBASE INITIALIZER -->
+    <!-- SECURE AUTO-INJECTED FIREBASE INITIALIZER -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        async function attemptBoot() {
+        // This function searches for the hidden config without hardcoding it
+        const fetchConfig = () => {
+            try {
+                // Check multiple possible global scopes for the config
+                return window.__firebase_config || 
+                       (typeof __firebase_config !== 'undefined' ? __firebase_config : null) ||
+                       (window.parent && window.parent.__firebase_config);
+            } catch(e) { return null; }
+        };
+
+        async function boot() {
             const status = document.getElementById('sync-status');
+            let raw = fetchConfig();
             
-            // This function checks for the specific platform-injected variables
-            const getConfig = () => {
-                try {
-                    return window.__firebase_config || (typeof __firebase_config !== 'undefined' ? __firebase_config : null);
-                } catch(e) { return null; }
-            };
-
-            let configRaw = getConfig();
-
-            // Use a broader observer if initial check fails
-            if (!configRaw) {
-                status.innerText = "● Connecting to Environment...";
-                let retries = 0;
-                while (!configRaw && retries < 60) {
-                    await new Promise(r => setTimeout(r, 200));
-                    configRaw = getConfig();
-                    retries++;
+            // If missing, wait up to 10 seconds for injection
+            if (!raw) {
+                let waitTime = 0;
+                while (!raw && waitTime < 10000) {
+                    await new Promise(r => setTimeout(r, 100));
+                    raw = fetchConfig();
+                    waitTime += 100;
                 }
             }
 
-            if (!configRaw) {
-                status.innerText = "● Local Mode (No Sync)";
-                status.className = "text-[9px] font-bold text-stone-400 uppercase";
-                window.isAppInitialized = true; // Fallback to local use
-                window.coffeeData = [{ id: 'local-0', name: "Local Cache", grams: 500, restDays: 14, roastDate: new Date().toISOString().split('T')[0], uiIndex: 0 }];
-                updatePlanner(true);
+            if (!raw) {
+                status.innerText = "● Config Missing - Click to Retry";
+                status.onclick = () => window.location.reload();
                 return;
             }
 
             try {
-                const config = typeof configRaw === 'string' ? JSON.parse(configRaw) : configRaw;
+                const config = typeof raw === 'string' ? JSON.parse(raw) : raw;
                 const appId = window.__app_id || (typeof __app_id !== 'undefined' ? __app_id : 'coffee-v1');
+                const token = window.__initial_auth_token || (typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null);
                 
                 const app = initializeApp(config);
                 const auth = getAuth(app);
                 const db = getFirestore(app);
 
                 window.firebaseSaveHandler = async () => {
-                    if (!window.appUser || !window.isAppInitialized) return;
+                    if (!window.appUser) return;
                     try {
-                        const docRef = doc(db, 'artifacts', appId, 'users', window.appUser.uid, 'inventory', 'main');
-                        await setDoc(docRef, { batches: window.coffeeData, ts: Date.now() });
+                        const path = `artifacts/${appId}/users/${window.appUser.uid}/inventory/main`;
+                        await setDoc(doc(db, path), { batches: window.coffeeData, ts: Date.now() });
                         status.innerText = "● Synced";
                         status.className = "text-[9px] font-bold text-emerald-600 uppercase";
                     } catch (e) { console.error(e); }
                 };
 
-                const token = window.__initial_auth_token || (typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null);
+                // Authenticate
                 if (token) {
                     await signInWithCustomToken(auth, token).catch(() => signInAnonymously(auth));
                 } else {
                     await signInAnonymously(auth);
                 }
 
-                onAuthStateChanged(auth, async (u) => {
-                    window.appUser = u;
-                    if (u) {
-                        document.getElementById('user-display').innerText = `ID: ${u.uid.substring(0,6)}`;
-                        const docRef = doc(db, 'artifacts', appId, 'users', u.uid, 'inventory', 'main');
+                onAuthStateChanged(auth, async (user) => {
+                    window.appUser = user;
+                    if (user) {
+                        document.getElementById('user-display').innerText = `ID: ${user.uid.substring(0,6)}`;
+                        const path = `artifacts/${appId}/users/${user.uid}/inventory/main`;
+                        const docRef = doc(db, path);
                         
                         const snap = await getDoc(docRef);
                         if (snap.exists()) {
                             window.coffeeData = snap.data().batches || [];
                         } else {
-                            window.coffeeData = [{ id: 'c0', name: "My First Batch", grams: 500, restDays: 14, roastDate: new Date().toISOString().split('T')[0], uiIndex: 0 }];
+                            window.coffeeData = [{ id: 'c0', name: "Light Roast #1", grams: 500, restDays: 14, roastDate: new Date().toISOString().split('T')[0], uiIndex: 0 }];
                         }
                         
                         window.isAppInitialized = true;
                         updatePlanner(true);
-
                         onSnapshot(docRef, (s) => {
                             if (s.exists() && !window.isUserEditing) {
                                 window.coffeeData = s.data().batches || [];
@@ -235,14 +234,14 @@
                         });
                     }
                 });
+
             } catch (err) {
-                console.error("Firebase Auth Error", err);
-                status.innerText = "● Sync Error";
+                console.error(err);
+                status.innerText = "● Connection Failed";
             }
         }
 
-        // Run boot sequence
-        attemptBoot();
+        boot();
     </script>
 
     <style>
@@ -275,19 +274,18 @@
         <div>
             <h1 class="text-lg font-bold text-[#8b4513]">☕ Coffee Rotation</h1>
             <div class="flex items-center gap-2">
-                <span id="sync-status" class="text-[9px] font-bold text-amber-500 uppercase">● Handshaking...</span>
-                <span id="last-saved" class="text-[9px] text-stone-400 font-mono"></span>
+                <span id="sync-status" class="text-[9px] font-bold text-amber-500 uppercase">● Checking Auth...</span>
             </div>
         </div>
         <div class="text-right">
             <div id="user-display" class="text-[9px] text-stone-300 font-mono">ID: ...</div>
-            <div class="text-[10px] text-stone-500 font-bold uppercase tracking-tighter">Inventory Sync</div>
+            <div class="text-[10px] text-stone-500 font-bold uppercase tracking-tighter">Secure Cloud Sync</div>
         </div>
     </header>
 
     <div class="main-container">
         <div class="sidebar">
-            <button onclick="addBatch()" class="btn-add w-full">+ Log New Batch</button>
+            <button onclick="addBatch()" class="btn-add w-full">+ Track New Batch</button>
             <div id="coffee-list" class="flex flex-col gap-3"></div>
         </div>
 
