@@ -148,26 +148,30 @@
         }
     </script>
 
-    <!-- AUTOMATIC FIREBASE INJECTION WITH FAILSAFE -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Step 1: Resolve the Project Identity Link
+        const CUSTOM_PROJECT_ID = "coffee-rotation-planner"; 
 
         async function init() {
             const status = document.getElementById('sync-status');
             
-            // Failsafe: Check if environment variables are available
-            if (typeof __firebase_config === 'undefined') {
-                status.innerText = "● Environment Initializing...";
+            // Check for injected config
+            const hasInjectedConfig = typeof __firebase_config !== 'undefined';
+            
+            if (!hasInjectedConfig) {
+                status.innerText = "● Waiting for Handshake...";
                 status.className = "text-[9px] font-bold text-amber-500 uppercase";
-                console.warn("Waiting for platform to inject Firebase configuration...");
+                console.warn("Handshake incomplete. If this persists, ensure your Firebase Project ID is linked correctly and refresh.");
                 return;
             }
 
             try {
                 const firebaseConfig = JSON.parse(__firebase_config);
-                const appId = typeof __app_id !== 'undefined' ? __app_id : 'coffee-planner-v1';
+                const appId = typeof __app_id !== 'undefined' ? __app_id : CUSTOM_PROJECT_ID;
 
                 const app = initializeApp(firebaseConfig);
                 const auth = getAuth(app);
@@ -186,7 +190,7 @@
                     }
                 };
 
-                // Authentication Protocol
+                // Try secure token login first, then anonymous
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
                 } else {
@@ -204,8 +208,7 @@
                         if (snap.exists()) {
                             window.coffeeData = snap.data().batches || [];
                         } else {
-                            // Default data if new user
-                            window.coffeeData = [{ id: 'c0', name: "Light Roast", grams: 500, restDays: 14, roastDate: new Date().toISOString().split('T')[0], uiIndex: 0 }];
+                            window.coffeeData = [{ id: 'c0', name: "First Roast", grams: 500, roastDate: new Date().toISOString().split('T')[0], uiIndex: 0 }];
                         }
                         
                         window.isAppInitialized = true;
@@ -216,25 +219,14 @@
                                 window.coffeeData = s.data().batches || [];
                                 updatePlanner(true);
                             }
-                        }, (err) => {
-                            console.error("Sync Error:", err);
-                            status.innerText = "● Sync Error";
-                        });
+                        }, (err) => { status.innerText = "● Sync Error"; });
                     }
                 });
-
             } catch (err) {
-                console.error("Init Error:", err);
                 status.innerText = "● Config Error";
             }
         }
-
-        // Wait for DOM to be fully ready
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', init);
-        } else {
-            init();
-        }
+        init();
     </script>
 
     <style>
